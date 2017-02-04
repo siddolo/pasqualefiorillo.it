@@ -289,6 +289,11 @@ ul.banner-social-buttons {
     margin-bottom: 0;
   }
 }
+@media (max-width: 767px) {
+	ul.banner-social-buttons li a {
+		width: 80%;
+	}
+}
 footer {
   padding: 50px 0;
 }
@@ -314,7 +319,6 @@ img::-moz-selection {
 body {
   webkit-tap-highlight-color: rgba(255, 255, 255, 0.2);
 }
-
 .copyright p {
 	font-size: 10px;
 }
