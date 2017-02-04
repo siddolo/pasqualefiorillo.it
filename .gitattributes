@@ -1,4 +1,4 @@
-log/				export-ignore
+log					export-ignore
 resources			export-ignore
 .gitattributes		export-ignore
 .gitignore			export-ignore
