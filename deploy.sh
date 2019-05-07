@@ -1,6 +1,6 @@
 #!/bin/bash
 PACKAGE_BASE_NAME=pasqualefiorillo.it
-DEPLOY_SERVER=pasqualefiorillo.it.deploy
+DEPLOY_SERVER=pasqualefiorillo.it
 DEPLOY_USER=sysop
 DEPLOY_PATH=/home/pasqualefiorillo.it/
 SUDO_USER=root
