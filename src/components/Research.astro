@@ -1,0 +1,28 @@
+---
+import { Badge, Card, CardGrid, Icon, LinkButton } from '@astrojs/starlight/components';
+import { publications } from '../data/publications';
+---
+<CardGrid>
+  {publications.map(p => (
+    <Card title={p.product} icon="document">
+      <div class="publication-meta">{p.cves.map(cve => <Badge text={cve} variant="note" />)}<time datetime={p.date}>{p.displayDate}</time></div>
+      <h3 class="finding-title">{p.title}</h3>
+      <p>{p.summary}</p>
+      <p class="authors">{p.authors.map((author, i) => <>{i > 0 && ', '}{author.url ? <a href={author.url}>{author.name}</a> : author.name}</>)}</p>
+      <div class="publication-actions">
+        <LinkButton href={p.advisory} variant="secondary" icon="right-arrow">{p.cves.length ? 'Read advisory' : 'Read article'}</LinkButton>
+      </div>
+      {p.cves.length > 0 && (
+        <ul class="nist-records" aria-label="NIST records" role="list">
+          {p.cves.map(cve => (
+            <li><a href={`https://nvd.nist.gov/vuln/detail/${cve}`}><span>NIST</span><span class="nist-cve">{cve}</span><Icon name="external" size=".9rem" /></a></li>
+          ))}
+        </ul>
+      )}
+      <details class="references">
+        <summary>Sources & references <span>({p.references.length})</span></summary>
+        <ul>{p.references.map(ref => <li><a href={ref.url}>{ref.label}</a></li>)}</ul>
+      </details>
+    </Card>
+  ))}
+</CardGrid>

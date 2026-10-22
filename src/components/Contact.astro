@@ -1,0 +1,25 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+
+const socialLinks = [
+  { title: 'Blog', icon: 'open-book', href: 'https://blog.pasqualefiorillo.it' },
+  { title: 'GitHub', icon: 'github', href: 'https://github.com/siddolo' },
+  { title: 'LinkedIn', icon: 'linkedin', href: 'https://www.linkedin.com/in/pasqualefiorillo/' },
+  { title: 'X', icon: 'x.com', href: 'https://twitter.com/siddolo' },
+] as const;
+---
+<ul class="contact-social" role="list">
+  {socialLinks.map(link => (
+    <li><a href={link.href}><Icon name={link.icon} size="1.5rem" /><span>{link.title}</span></a></li>
+  ))}
+</ul>
+<p>For professional services, please <a href="https://www.rooters.it/contact-us/">contact Rooters</a>.</p>
+<div class="contact-email">
+  <h3>Email</h3>
+  <p><code>{'info@{myname}{mysurname}.it'}</code></p>
+  <p>{'{myname} is pasquale'}<br />{'{mysurname} is fiorillo'}</p>
+  <div class="pgp-contact">
+    <div><h4>Encryption</h4><p>My public PGP key: <code>0x124FED2DF8DA417E</code></p></div>
+    <a class="pgp-link" href="/0x124FED2DF8DA417E.asc" download>Download public key ↓</a>
+  </div>
+</div>

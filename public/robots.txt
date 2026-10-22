@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://www.pasqualefiorillo.it/sitemap-index.xml

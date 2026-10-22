@@ -1,5 +1,0 @@
-log					export-ignore
-dev-resources			export-ignore
-.gitattributes		export-ignore
-.gitignore			export-ignore
-deploy.sh			export-ignore

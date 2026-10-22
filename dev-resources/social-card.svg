@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#171a18"/>
+  <rect x="72" y="76" width="56" height="5" fill="#42dca3"/>
+  <g fill="#f4f4f5" font-family="sans-serif" font-size="88" font-weight="600">
+    <text x="67" y="240">Pasquale</text>
+    <text x="67" y="345">Fiorillo<tspan fill="#42dca3" font-size="40" font-weight="400"> / sid</tspan></text>
+  </g>
+  <text x="72" y="420" fill="#c1c5c3" font-family="sans-serif" font-size="30">Security Consultant &amp; Researcher.</text>
+  <text x="72" y="467" fill="#959c98" font-family="sans-serif" font-size="23">Mind about your safety.</text>
+  <path d="M72 535h1056" stroke="#353b38"/>
+  <text x="72" y="582" fill="#42dca3" font-family="sans-serif" font-size="22">www.pasqualefiorillo.it</text>
+</svg>
