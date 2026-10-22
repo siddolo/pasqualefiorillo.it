@@ -10,7 +10,7 @@ const socialLinks = [
 ---
 <ul class="contact-social" role="list">
   {socialLinks.map(link => (
-    <li><a href={link.href}><Icon name={link.icon} size="1.5rem" /><span>{link.title}</span></a></li>
+    <li><a href={link.href} aria-label={link.title}><Icon name={link.icon} size="1.5rem" /><span>{link.title}</span></a></li>
   ))}
 </ul>
 <p>For professional services, please <a href="https://www.rooters.it/contact-us/">contact Rooters</a>.</p>

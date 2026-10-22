@@ -438,6 +438,15 @@ html {
     margin-top: 3rem;
   }
 
+  .contact-social a {
+    min-width: 44px;
+    justify-content: center;
+  }
+
+  .contact-social span {
+    display: none;
+  }
+
   .pgp-contact {
     flex-direction: column;
     align-items: flex-start;
