@@ -387,6 +387,25 @@ html {
     grid-row: 1;
   }
 
+  .header-tools starlight-theme-select select {
+    width: 44px;
+    height: 44px;
+    margin: 0;
+    padding: 0;
+    color: transparent;
+    text-overflow: clip;
+  }
+
+  .header-tools starlight-theme-select .label-icon {
+    inset-inline-start: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 1.25rem;
+  }
+
+  .header-tools starlight-theme-select .caret {
+    display: none;
+  }
+
   .personal-header nav {
     grid-column: 1 / -1;
     grid-row: 2;
