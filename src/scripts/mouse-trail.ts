@@ -392,8 +392,8 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
      * Several events may arrive before a frame: retain the latest position
      * and accumulate displacement. The first event only establishes an origin,
      * preventing a streak across the screen when the pointer enters. */
-    const move = (event: PointerEvent) => {
-      if (event.pointerType !== 'mouse' || !width || !height) return;
+    const move = (event: { clientX: number; clientY: number }) => {
+      if (!width || !height) return;
       const x = event.clientX / width;
       const y = 1 - event.clientY / height;
       if (previous) {
@@ -408,13 +408,30 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
       previous = { x, y };
     };
     const leave = () => { previous = undefined; };
+    const pointer = (event: PointerEvent) => {
+      if (event.pointerType === 'mouse') move(event);
+    };
+    /* Touch events keep reporting movement during native scrolling, when
+     * pointer events are cancelled. Passive listeners leave scrolling intact. */
+    const touch = (event: TouchEvent) => {
+      if (event.touches.length === 1) move(event.touches[0]);
+      else leave();
+    };
     const lost = (event: Event) => { event.preventDefault(); destroy(); };
-    window.addEventListener('pointermove', move, { passive: true });
+    window.addEventListener('pointermove', pointer, { passive: true });
+    window.addEventListener('touchstart', touch, { passive: true });
+    window.addEventListener('touchmove', touch, { passive: true });
+    window.addEventListener('touchend', leave, { passive: true });
+    window.addEventListener('touchcancel', leave, { passive: true });
     document.documentElement.addEventListener('pointerleave', leave);
     window.addEventListener('resize', resize, { passive: true });
     canvas.addEventListener('webglcontextlost', lost);
     release.push(() => {
-      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointermove', pointer);
+      window.removeEventListener('touchstart', touch);
+      window.removeEventListener('touchmove', touch);
+      window.removeEventListener('touchend', leave);
+      window.removeEventListener('touchcancel', leave);
       document.documentElement.removeEventListener('pointerleave', leave);
       window.removeEventListener('resize', resize);
       canvas.removeEventListener('webglcontextlost', lost);

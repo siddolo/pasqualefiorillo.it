@@ -1,10 +1,9 @@
 import { test, expect } from '@playwright/test';
 
-test('the trail respects motion preferences and leaves navigation usable', async ({ page, isMobile }) => {
+test('the trail respects motion preferences and leaves navigation usable', async ({ page }) => {
   await page.goto('/');
   const trail = page.locator('mouse-trail');
-  if (isMobile) await expect(trail).toBeHidden();
-  else await expect(trail).toBeVisible();
+  await expect(trail).toBeVisible();
 
   await page.mouse.move(300, 500);
   await page.mouse.move(700, 500, { steps: 8 });
