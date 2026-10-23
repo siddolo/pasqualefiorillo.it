@@ -1,20 +1,27 @@
-/* Mouse trail -- A small fluid field rendered as fading ASCII characters.
+/* Cursor trail rendered as fading ASCII characters over a 2D fluid simulation.
  *
- * Pointer movement adds velocity and ink to a fixed-size grid. The GPU moves
- * both fields forward, then draws the ink as glyphs on the full-size canvas.
- * The simulation resolution is independent of the display resolution.
+ * Moving the pointer injects velocity and dye ("ink") into a fixed 180x180
+ * grid. Each frame steps the fluid forward on that grid, then renders the ink
+ * field at full canvas resolution by mapping local ink density to ASCII glyphs.
  *
- * The strings below are GLSL programs, compiled by WebGL at initialization.
- * TypeScript owns the resources and schedules the passes; GLSL computes each
- * output pixel. No animation frames are requested while the trail is idle. */
+ * WebGL splits the work between two languages:
+ * - TypeScript (second half of the file) runs on the CPU: it allocates GPU
+ *   textures and framebuffers, listens for input, and schedules draw passes.
+ * - GLSL (the vertex, simulation, and display strings below) is the C-like
+ *   shader language compiled by the WebGL driver at startup and executed on the
+ *   GPU for every pixel of the target texture or canvas.
+ *
+ * The animation loop only runs while the trail is visible: it starts on pointer
+ * movement and stops once the trail has faded out (LIFETIME ms after input). */
 const SIZE = 180;
 const LIFETIME = 2200;
 const GLYPHS = '.:+*ox#';
 
 /* ------------------------------- GPU shaders ----------------------------- */
 
-/* All passes draw the same quad. Convert its clip-space coordinates [-1,1]
- * into texture coordinates [0,1], shared by the two fragment shaders. */
+/* Every GPU pass draws the same fullscreen rectangle (a 2-triangle strip with
+ * clip-space coordinates in [-1, 1]). This vertex shader maps those coordinates
+ * to UV texture coordinates in [0, 1] for the fragment shaders below. */
 const vertex = `
 attribute vec2 position;
 varying vec2 uv;
@@ -23,17 +30,21 @@ void main() {
   gl_Position = vec4(position, 0.0, 1.0);
 }`;
 
-/* RGBA8 textures work in WebGL 1 without floating-point texture extensions.
- * Each field uses only the channels it needs:
+/* Fragment shader for all simulation steps.
  *
- *     flow        R,G = signed horizontal and vertical velocity
- *     ink         R   = density in [0,1]
- *     pressure    R   = signed pressure
- *     divergence  R   = signed local expansion of the velocity field
+ * Standard WebGL 1 does not guarantee support for floating-point textures, so
+ * all simulation grids are stored in plain 8-bit RGBA textures:
  *
- * Signed values in [-4,4] are mapped into [0,1], with zero at the midpoint.
- * Storage is quantized to eight bits, so this is an approximate visual fluid.
- * The texel size below must match SIZE. */
+ *     flow        R,G = horizontal and vertical velocity (signed)
+ *     ink         R   = ink density in [0, 1]
+ *     pressure    R   = pressure (signed)
+ *     divergence  R   = local expansion/compression of flow (signed)
+ *
+ * Signed values in [-4, 4] are packed into [0, 1] via encode()/decode(), with
+ * 0 mapped to 0.5. 8-bit precision is coarse, but plenty for a short-lived
+ * visual effect.
+ *
+ * If you change SIZE, update texel (1.0 / SIZE) below as well. */
 const simulation = `
 precision highp float;
 varying vec2 uv;
@@ -49,39 +60,42 @@ float pressure(vec2 offset) { return decode(texture2D(source, uv + offset).rr).x
 void main() {
   vec4 value = texture2D(source, uv);
   if (operation == 0) {
-    /* Splat: add a soft spot of velocity or ink at the pointer. Correct the
-     * horizontal distance for the viewport aspect ratio to keep it round. */
+    /* Splat: add a Gaussian dab of velocity or ink around the cursor position.
+     * Multiply X by the viewport aspect ratio so the brush stays circular. */
     vec2 distance = (uv - point) * vec2(aspect, 1.0);
     float ink = exp(-dot(distance, distance) / 0.00045);
     if (velocity > 0.5) value.xy = encode(decode(value.xy) + impulse * ink);
     else value.r = min(1.0, value.r + ink * 0.7);
   } else if (operation == 1) {
-    /* Advection: trace backward through the velocity field and sample what
-     * reaches this cell. Decay signed velocity after decoding, so it tends
-     * toward rest rather than toward the lowest encoded value. */
+    /* Advection: move a field (velocity or ink) along the flow by looking up
+     * where the fluid at uv came from a moment (dt) ago. Velocity must be
+     * multiplied by decay in decoded space so it settles toward 0 (encoded
+     * as 0.5) rather than -4 (encoded as 0.0). */
     vec2 flow = decode(texture2D(field, uv).xy);
     value = texture2D(source, clamp(uv - flow * dt * 0.2, texel * 0.5, 1.0 - texel * 0.5));
     if (velocity > 0.5) value.xy = encode(decode(value.xy) * decay);
     else value.r *= decay;
   } else if (operation == 2) {
-    /* Divergence: estimate how much velocity leaves each cell using its four
-     * neighbors. The pressure solve uses this as its correction target. */
+    /* Divergence: measure net velocity flowing out of this cell by comparing
+     * left/right and bottom/top neighbors. In an incompressible fluid this
+     * should be zero; any non-zero value is removed by the pressure pass. */
     float left = decode(texture2D(source, uv - vec2(texel.x, 0.0)).xy).x;
     float right = decode(texture2D(source, uv + vec2(texel.x, 0.0)).xy).x;
     float bottom = decode(texture2D(source, uv - vec2(0.0, texel.y)).xy).y;
     float top = decode(texture2D(source, uv + vec2(0.0, texel.y)).xy).y;
     value.r = encode(vec2((right - left + top - bottom) * 0.5)).x;
   } else if (operation == 3) {
-    /* One Jacobi iteration of the pressure solve. Read the previous estimate
-     * from source and the fixed divergence from field. Repeated passes spread
-     * the correction across neighboring cells. */
+    /* Pressure solve (one Jacobi relaxation step): average the four neighboring
+     * pressures from source and subtract the divergence from field. Running
+     * this pass several times per frame finds the pressure field needed to keep
+     * the fluid from bunching up. */
     float sum = pressure(vec2(-texel.x, 0.0)) + pressure(vec2(texel.x, 0.0))
       + pressure(vec2(0.0, -texel.y)) + pressure(vec2(0.0, texel.y));
     float divergence = decode(texture2D(field, uv).rr).x;
     value.r = encode(vec2((sum - divergence) * 0.25)).x;
   } else {
-    /* Projection (operation 4): subtract the pressure gradient from velocity
-     * to reduce expansion and compression in the flow. */
+    /* Projection (operation 4): subtract the pressure gradient from the
+     * velocity field so the flow swirls around obstacles instead of compressing. */
     vec2 gradient = vec2(
       pressure(vec2(texel.x, 0.0)) - pressure(vec2(-texel.x, 0.0)),
       pressure(vec2(0.0, texel.y)) - pressure(vec2(0.0, -texel.y)));
@@ -90,10 +104,14 @@ void main() {
   gl_FragColor = vec4(value.rgb, 1.0);
 }`;
 
-/* Sample ink once per character cell, then use its density to select a glyph
- * from the atlas. Logarithmic mapping keeps faint ink visible; a small flicker
- * varies the glyph choice over time. The atlas must match GLYPHS: seven slots
- * ordered from sparse to dense. */
+/* Fragment shader for the final display pass.
+ *
+ * Divides the canvas into cellSize-pixel character cells, samples the ink
+ * density at the center of each cell, and picks one of the 7 characters in the
+ * glyph atlas (if GLYPHS.length changes, update the 7.0 constants below).
+ * A log curve stretches low densities so dying trails step through lighter
+ * characters before disappearing, and a per-cell hash adds a slight 8 Hz
+ * character shimmer. */
 const display = `
 precision highp float;
 varying vec2 uv;
@@ -112,27 +130,29 @@ void main() {
   vec2 local = fract(pixel / cellSize);
   float glyph = texture2D(atlas, vec2((index + local.x) / 7.0, local.y)).a;
   float alpha = (glyph * smoothstep(0.015, 0.25, density) + density * 0.06) * opacity;
-  /* The canvas uses premultiplied alpha, including the faint ink background. */
+  /* The WebGL context is configured for premultiplied alpha. */
   gl_FragColor = vec4(color * alpha, alpha);
 }`;
 
 /* ------------------------- Resources and initialization ------------------ */
 
-/* A pass cannot sample the texture it is rendering into. Mutable fields use
- * two targets, swapping their roles after each pass:
+/* WebGL does not allow a draw call to sample from and render into the same
+ * texture at the same time. Any grid updated from its own previous state
+ * (flow, ink, pressure) therefore uses two targets and swaps them after
+ * each pass:
  *
  *     read.texture --> shader --> write.buffer
  *          ^                           |
  *          +---------- swap -----------+
  *
- * Divergence needs only one target: it is computed once per simulation step
- * and remains unchanged throughout the pressure iterations. */
+ * divergence only needs a single target because it is written once from
+ * flow and then only read during the pressure loop. */
 type Target = { texture: WebGLTexture; buffer: WebGLFramebuffer };
 type Pair = { read: Target; write: Target };
 
-/* Initialize an idle trail and return its cleanup function. Return undefined
- * if graphics initialization fails. The caller decides whether motion and
- * visibility preferences allow the effect to run. */
+/* Attach the cursor trail to canvas and return an idempotent cleanup
+ * function, or undefined if WebGL is unavailable. Motion and page-visibility
+ * checks are left to the caller. */
 export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | undefined {
   const gl = canvas.getContext('webgl', {
     alpha: true, antialias: false, depth: false, stencil: false,
@@ -140,8 +160,9 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
   });
   if (!gl || gl.isContextLost()) return;
 
-  /* Register cleanup as resources are acquired, so partial initialization
-   * can use the same teardown path. Destroy is safe to call more than once. */
+  /* Track every allocated GPU object and event listener in release so that
+   * if initialization fails halfway through, destroy() can still free
+   * everything created up to that point. */
   const release: (() => void)[] = [];
   let frame = 0;
   let disposed = false;
@@ -158,8 +179,7 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
   };
 
   try {
-    /* Both programs share one vertex shader and attribute location. Shader
-     * compilation and linking failures unwind through the cleanup stack. */
+    /* Compile the shared vertex shader and link the two fragment programs. */
     const shader = (type: number, code: string) => {
       const result = gl.createShader(type);
       if (!result) throw new Error('Shader unavailable');
@@ -196,8 +216,9 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
-    /* Linear sampling interpolates the advected fields. Clamp-to-edge also
-     * supplies boundary samples for neighbor lookups at the edge of the grid. */
+    /* LINEAR filtering gives the advection pass free bilinear interpolation
+     * between grid cells; CLAMP_TO_EDGE keeps neighbor lookups at the border
+     * from wrapping around to the opposite side of the screen. */
     const texture = () => {
       const result = gl.createTexture();
       if (!result) throw new Error('Texture unavailable');
@@ -231,17 +252,16 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
       gl.clearColor(value, value, value, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
     };
-    /* Signed fields start at encoded zero; density starts empty. Divergence
-     * is overwritten before it is read, so it does not need clearing. */
+    /* Signed grids (flow, pressure) represent 0 as 0.5; ink starts at 0. */
     const reset = () => {
       for (const t of [flow.read, flow.write, pressure.read, pressure.write]) clear(t, 0.5);
       for (const t of [ink.read, ink.write]) clear(t, 0);
     };
     reset();
 
-    /* Build a horizontal atlas once, with one 32x32 slot per character. Only
-     * its alpha is used by the display shader. Flip the upload to reconcile
-     * canvas coordinates (top-down) with texture coordinates (bottom-up). */
+    /* Render GLYPHS into a 2D offscreen canvas (one 32x32 cell per character)
+     * and upload it as a texture strip. UNPACK_FLIP_Y_WEBGL flips the image on
+     * upload because 2D canvas Y points down whereas WebGL texture Y points up. */
     const glyphs = document.createElement('canvas');
     glyphs.width = GLYPHS.length * 32;
     glyphs.height = 32;
@@ -267,8 +287,9 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
     let previous: { x: number; y: number } | undefined;
     let pending: { x: number; y: number; dx: number; dy: number } | undefined;
     let color = [0, 0, 0];
-    /* The site's accent tokens are six-digit hex colors. Observe the theme
-     * attribute so an existing trail picks up changes without rebuilding. */
+    /* Parse --sl-color-accent (#rrggbb) into normalized RGB and watch
+     * data-theme on <html> so toggling dark/light mode recolors the active
+     * trail without recreating the WebGL context. */
     const theme = () => {
       const hex = getComputedStyle(canvas).getPropertyValue('--sl-color-accent').trim();
       color = [1, 3, 5].map(start => parseInt(hex.slice(start, start + 2), 16) / 255);
@@ -282,8 +303,6 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
       gl.activeTexture(gl.TEXTURE0 + unit);
       gl.bindTexture(gl.TEXTURE_2D, texture);
     };
-    /* The caller selects the simulation program, viewport and scalar uniforms.
-     * Output must be distinct from both sampled targets. */
     const pass = (operation: number, source: Target, field: Target, output: Target) => {
       gl.uniform1i(s.operation, operation);
       bind(source.texture, 0);
@@ -291,8 +310,8 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
       gl.bindFramebuffer(gl.FRAMEBUFFER, output.buffer);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     };
-    /* Stop drawing and discard old motion, but keep GPU resources available
-     * for the next pointer movement. Destroy also releases those resources. */
+    /* Pause the loop and wipe the simulation grids + canvas, keeping all WebGL
+     * resources allocated so the next cursor movement can resume immediately. */
     const stop = () => {
       cancelAnimationFrame(frame);
       frame = 0;
@@ -306,8 +325,8 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
     const resize = () => {
       width = canvas.clientWidth;
       height = canvas.clientHeight;
-      /* Cap pixel density and backing width to reduce display-pass work.
-       * The simulation grid keeps the same dimensions across resizes. */
+      /* Cap pixel ratio at 1.5 and backing width at 1920px so the display pass
+       * stays light on 4K/Retina screens. The fluid grid stays at SIZE x SIZE. */
       ratio = Math.min(devicePixelRatio || 1, 1.5, 1920 / Math.max(width, 1));
       canvas.width = Math.max(1, Math.round(width * ratio));
       canvas.height = Math.max(1, Math.round(height * ratio));
@@ -317,9 +336,9 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
 
     /* --------------------------- Simulation loop ------------------------- */
 
-    /* One frame: inject input, advect velocity, solve pressure, project the
-     * velocity, advect ink, then render. Time is measured in seconds inside
-     * the simulation; cap the step to avoid large jumps after delayed frames. */
+    /* Advance the fluid by one frame and draw the ASCII overlay. dt is
+     * clamped to 33ms (~30 fps) so a slow frame or backgrounded tab doesn't
+     * cause the advection step to overshoot. */
     const tick = (now: number) => {
       frame = 0;
       if (disposed) return;
@@ -333,8 +352,8 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
       gl.uniform1f(s.aspect, width / height);
       gl.uniform1f(s.dt, dt);
       if (pending) {
-        /* Spread input along the accumulated movement rather than leaving a
-         * single dot at its end. Limit both splat count and impulse strength. */
+        /* Break fast cursor movements into up to 10 intermediate splats (~12px
+         * apart) so quick swipes leave a continuous line instead of dots. */
         const { x, y, dx, dy } = pending;
         const steps = Math.min(10, Math.max(1, Math.ceil(Math.hypot(dx * width, dy * height) / 12)));
         for (let i = 1; i <= steps; i++) {
@@ -349,14 +368,14 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
         }
         pending = undefined;
       }
+      /* Advect velocity, compute divergence, relax pressure, project velocity,
+       * and finally advect the ink along the divergence-free velocity field. */
       gl.uniform1f(s.velocity, 1);
       gl.uniform1f(s.decay, Math.exp(-7 * dt));
       pass(1, flow.read, flow.read, flow.write);
       swap(flow);
       pass(2, flow.read, flow.read, divergence);
       clear(pressure.read, 0.5);
-      /* A fixed iteration count bounds the cost of the approximate solve.
-       * Every pass writes the full target before the next swap. */
       for (let i = 0; i < 12; i++) {
         pass(3, pressure.read, divergence, pressure.write);
         swap(pressure);
@@ -368,9 +387,8 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
       pass(1, ink.read, flow.read, ink.write);
       swap(ink);
 
-      /* Return to the canvas at display resolution. Cells stay eight CSS
-       * pixels wide regardless of backing scale. Fade the whole trail during
-       * its final half-second, then stop() clears it on expiry. */
+      /* Draw the ink field onto the canvas as 8px CSS character cells, fading
+       * the overall opacity out during the last 500ms of LIFETIME. */
       gl.useProgram(render);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, canvas.width, canvas.height);
@@ -388,10 +406,10 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
     };
     /* -------------------------- Input and teardown ----------------------- */
 
-    /* Convert viewport coordinates into bottom-up texture coordinates.
-     * Several events may arrive before a frame: retain the latest position
-     * and accumulate displacement. The first event only establishes an origin,
-     * preventing a streak across the screen when the pointer enters. */
+    /* Convert viewport coordinates (top-left origin) to texture UV coordinates
+     * (bottom-left origin) and accumulate displacements across events that
+     * arrive between animation frames. The very first event after cursor entry
+     * only records previous, avoiding a false stroke from an old position. */
     const move = (event: { clientX: number; clientY: number }) => {
       if (!width || !height) return;
       const x = event.clientX / width;
@@ -411,8 +429,8 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
     const pointer = (event: PointerEvent) => {
       if (event.pointerType === 'mouse') move(event);
     };
-    /* Touch events keep reporting movement during native scrolling, when
-     * pointer events are cancelled. Passive listeners leave scrolling intact. */
+    /* On mobile, browsers cancel pointermove as soon as a gesture becomes a
+     * page scroll, whereas passive touchmove keeps firing during the scroll. */
     const touch = (event: TouchEvent) => {
       if (event.touches.length === 1) move(event.touches[0]);
       else leave();
@@ -438,7 +456,7 @@ export function createMouseTrail(canvas: HTMLCanvasElement): (() => void) | unde
     });
     return destroy;
   } catch {
-    /* Graphics are optional: unsupported GPUs leave a normal static page. */
+    /* The trail is purely decorative; fail silently if WebGL is unsupported. */
     destroy();
     return;
   }
